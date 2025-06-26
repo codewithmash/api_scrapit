@@ -4,8 +4,8 @@ const admin = require("../firebase1");
 const nodemailer = require("nodemailer");
 const bcrypt = require('bcrypt'); 
 const saltRounds = 10;
-const { OAuth2Client } = require("google-auth-library");
-const client = new OAuth2Client("729103709945-mnsfpogikq7o3q6luq6oj8619m2icrba.apps.googleusercontent.com");
+// const { OAuth2Client } = require("google-auth-library");
+// const client = new OAuth2Client("729103709945-mnsfpogikq7o3q6luq6oj8619m2icrba.apps.googleusercontent.com");
 const multer = require("multer");
 
 
@@ -108,53 +108,109 @@ router.post("/send_otp",async (req, res) => {
 } 
 );
 
-router.post('/setDoor', async (req, res) => {
-  const { email, password } = req.body;
 
-  if (!email || !password) {
-    return res.status(400).json({ error: 'Email and password are required' });
+
+router.post('/setDoor', async (req, res) => {
+  const { email, phoneNumber, password } = req.body;
+
+  if ((!email && !phoneNumber) || !password) {
+    return res.status(400).json({ error: 'Email or phoneNumber and password are required' });
   }
+
+  const identifier = email || phoneNumber;
 
   try {
     const db = admin.firestore();
-    const currentUserRef = db.collection('users').doc(email);
-    const currentUserDoc = await currentUserRef.get();
+    const userRef = db.collection('users').doc(identifier);
+    const userDoc = await userRef.get();
 
-    if (!currentUserDoc.exists) {
-      console.log("The current user does not exist");
+    if (!userDoc.exists) {
+      console.log("The user does not exist");
       return res.status(400).json({ error: 'User not found' });
     }
 
-    // Hash the password before storing
+    // Hash password for Firestore
     const hashedPassword = await bcrypt.hash(password, saltRounds);
-
-    await currentUserRef.update({ password: hashedPassword });
+    await userRef.update({ password: hashedPassword });
     console.log('Password updated in Firestore');
 
     let userRecord;
     try {
-      userRecord = await admin.auth().getUserByEmail(email);
-      console.log('User already exists in Firebase Auth:', userRecord.uid);
+      // Fetch user by email or phoneNumber
+      userRecord = email
+        ? await admin.auth().getUserByEmail(email)
+        : await admin.auth().getUserByPhoneNumber(phoneNumber);
+
+      console.log('User exists in Firebase Auth:', userRecord.uid);
+
+      // Update password in Firebase Auth
+      await admin.auth().updateUser(userRecord.uid, { password: password });
+      console.log('Password updated in Firebase Auth');
+
     } catch (error) {
       if (error.code === 'auth/user-not-found') {
         userRecord = await admin.auth().createUser({
-          email: email,
-          emailVerified: true,
+          email: email || undefined,
+          phoneNumber: phoneNumber || undefined,
+          emailVerified: !!email,
           password: password,
           displayName: "ScrapUser",
           disabled: false,
         });
-        console.log('Successfully created new user in Firebase Auth:', userRecord.uid);
+        console.log('Successfully created new Firebase Auth user:', userRecord.uid);
       } else {
         throw error;
       }
     }
 
-    return res.status(200).json({ message: 'Password updated and Firebase user set successfully' });
+    return res.status(200).json({ message: 'Password set successfully in Firestore and Firebase Auth' });
 
   } catch (error) {
     console.error('Error in /setDoor:', error);
     return res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+router.post('/verify_email_otp', async (req, res) => {
+  console.log("Now verifying the otp");
+  try {
+    const { email, otp } = req.body;
+
+    if (!email || !otp) {
+      return res.status(400).json({ error: 'Email and OTP are required' });
+    }
+
+    const db = admin.firestore();
+    const otpDocRef = db.collection('emailOtps').doc(email);
+    const otpDoc = await otpDocRef.get();
+
+    if (!otpDoc.exists) {
+      return res.status(400).json({ error: 'No OTP found for this email' });
+    }
+
+    const data = otpDoc.data();
+
+    // Check if expired
+    if (Date.now() > data.expiresAt) {
+      console.log(" the otp has been expired");
+      return res.status(400).json({ error: 'OTP has expired' });
+    }
+
+    // Check OTP match
+    if (data.otp !== otp) {
+      console.log(" the otp is invalid not matching");
+      return res.status(400).json({ error: 'Invalid OTP' });
+    }
+    
+    // OTP is valid - delete the OTP document
+    await otpDocRef.delete();
+    return res.status(200).json({ 
+      message: 'OTP verified successfully',
+      canResetPassword: true
+    });
+  } catch (err) {
+    console.error(err);
+    return res.status(500).json({ error: 'Internal Server Error' });
   }
 });
 
@@ -163,7 +219,8 @@ router.post("/loginEmail", async (req, res) => {
 
   try {
     const { email, password } = req.body;
-
+    console.log(" this is my password ");
+    console.log(password);
     // Validate input
     if (!email || !password) {
       return res.status(400).json({ error: 'Email and password are required' });
@@ -204,48 +261,8 @@ router.post("/loginEmail", async (req, res) => {
   }
 });
 
-router.post('/verify_email_otp', async (req, res) => {
 
-  console.log("Now verifying the otp");
-  try {
-    const { email, otp } = req.body;
 
-    if (!email || !otp) {
-      return res.status(400).json({ error: 'Email and OTP are required' });
-    }
-
-    const db = admin.firestore();
-    const otpDocRef = db.collection('emailOtps').doc(email);
-    const otpDoc = await otpDocRef.get();
-
-    if (!otpDoc.exists) {
-      return res.status(400).json({ error: 'No OTP found for this email' });
-    }
-
-    const data = otpDoc.data();
-
-    // Check if expired
-    if (Date.now() > data.expiresAt) {
-
-      console.log(" the otp has been expired");
-      return res.status(400).json({ error: 'OTP has expired' });
-    }
-
-    // Check OTP match
-    if (data.otp !== otp) {
-            console.log(" the otp is invalid not matching");
-      return res.status(400).json({ error: 'Invalid OTP' });
-    }
-    // OTP is valid - delete the OTP document
-    await otpDocRef.delete();
-    return res.status(200).json({ message: 'OTP verified successfully' });
-  } catch (err) {
-    console.error(err);
-    return res.status(500).json({ error: 'Internal Server Error' });
-  }
-});
-
-// The google signIn
 router.post("/google_sign", async (req, res) => {
   const { idToken } = req.body;
 
@@ -301,7 +318,6 @@ router.post("/google_sign", async (req, res) => {
   }
 });
 
-
 router.post('/userStats', async (req, res) => {
     const email = req.body;
   try {
@@ -354,7 +370,6 @@ router.post("/save-address", async (req, res) => {
     res.status(500).json({ error: "Internal server error" });
   }
 });
-
 
 router.post("/delete-address", async (req, res) => {
   try {
@@ -438,7 +453,6 @@ router.post("/save-payment-details", upload.single("qrCode"), async (req, res) =
   }
 });
 
-
 router.post("/add_to_bin",upload.none(),  async (req, res) => {
   try {
     const { userId, scraps: scrapsString } = req.body;
@@ -447,6 +461,7 @@ router.post("/add_to_bin",upload.none(),  async (req, res) => {
     let scraps;
     try {
       scraps = JSON.parse(scrapsString);
+      console.log(scrapsString);
     } catch (e) {
       return res.status(400).json({ 
         error: "Invalid scraps format",
@@ -630,7 +645,6 @@ router.post("/upload_scrap_image", upload.single("image"), async (req, res) => {
   }
 });
 
-
 router.post("/update_scrap_quantity", async (req, res) => {
   try {
     const { userId, scrapItemID, quantity } = req.body;
@@ -683,8 +697,6 @@ router.post("/update_scrap_quantity", async (req, res) => {
     res.status(500).json({ error: "Internal Server Error", details: err.message });
   }
 });
-
-
 
 router.post('/get_bin_items', async (req, res) => {
   try {
@@ -897,8 +909,6 @@ router.post("/get_user_bin", async (req, res) => {
   }
 });
 
-
-
 router.put('/users/:email', async (req, res) => {
   try {
     const userEmail = req.params.email;
@@ -962,7 +972,6 @@ router.put('/users/:email', async (req, res) => {
     });
   }
 });
-
 
 router.delete('/users/:email', async (req, res) => {
   try {
@@ -1040,6 +1049,186 @@ router.get('/notification/:userId', async (req, res) => {
                         error: error.message
         });
     }
+});
+
+router.delete('/delete_account', async (req, res) => {
+  const userEmail = req.query.userId;
+
+  if (!userEmail) {
+    return res.status(400).json({ error: 'Missing userId (email) in query params' });
+  }
+
+  try {
+    const db = admin.firestore();
+    const userRef = db.collection('users').doc(userEmail);
+
+    const userDoc = await userRef.get();
+    if (!userDoc.exists) {
+      return res.status(404).json({ error: 'User not found in Firestore' });
+    }
+
+    // 🔥 Delete subcollections (e.g., addresses, notifications)
+    const subcollections = ['addresses', 'notifications'];
+    for (const sub of subcollections) {
+      const subColRef = userRef.collection(sub);
+      const subDocs = await subColRef.listDocuments();
+      const batch = db.batch();
+
+      subDocs.forEach(doc => batch.delete(doc));
+      if (subDocs.length > 0) {
+        await batch.commit();
+      }
+    }
+
+    // 🔥 Delete Firestore user document
+    await userRef.delete();
+
+    // 🔥 Delete Firebase Auth user by email
+    const userRecord = await admin.auth().getUserByEmail(userEmail);
+    await admin.auth().deleteUser(userRecord.uid);
+
+    return res.status(200).json({ message: `User ${userEmail} deleted successfully` });
+
+  } catch (err) {
+    console.error('Error deleting account:', err);
+    return res.status(500).json({ error: 'Internal server error', details: err.message });
+  }
+});
+
+router.post('/verify_phone_otp', async (req, res) => {
+  const { phoneNumber, verificationCode } = req.body;
+
+  if (!phoneNumber || !verificationCode) {
+    return res.status(400).json({ error: 'Phone number and verification code are required' });
+  }
+
+  try {
+    const db = admin.firestore();
+    const verificationDoc = await db.collection('phoneResetVerifications').doc(phoneNumber).get();
+    
+    if (!verificationDoc.exists) {
+      return res.status(400).json({ error: 'No verification request found for this phone number' });
+    }
+
+    const verificationData = verificationDoc.data();
+    
+    // Check if expired
+    if (Date.now() > verificationData.expiresAt) {
+      await verificationDoc.ref.delete();
+      return res.status(400).json({ error: 'Verification code has expired' });
+    }
+
+    // Verify the code with Firebase Auth
+    const credential = firebase.auth.PhoneAuthProvider.credential(
+      verificationData.verificationId,
+      verificationCode
+    );
+    
+    await firebase.auth().signInWithCredential(credential);
+    
+    // Verification successful - delete the verification record
+    await verificationDoc.ref.delete();
+    
+    // Return the associated email for password reset
+    return res.status(200).json({ 
+      message: 'Phone number verified successfully',
+      email: verificationData.email,
+      canResetPassword: true
+    });
+  } catch (error) {
+    console.error('Error verifying phone OTP:', error);
+    if (error.code === 'auth/invalid-verification-code') {
+      return res.status(400).json({ error: 'Invalid verification code' });
+    }
+    return res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+router.post("/forgot_password", async (req, res) => {
+  const { email, phoneNumber } = req.body;
+
+  if (!email && !phoneNumber) {
+    return res.status(400).json({ error: 'Email or phone number is required' });
+  }
+
+  try {
+    if (email) {
+      // Email flow - use existing send_otp endpoint
+      console.log("Initiating email password reset");
+      // You might want to first check if email exists in your users collection
+      const db = admin.firestore();
+      const userDoc = await db.collection('users').doc(email).get();
+      
+      if (!userDoc.exists) {
+        return res.status(404).json({ error: 'User not found' });
+      }
+      
+      // Get user name for the email
+      const userData = userDoc.data();
+      const name = userData.name || '';
+      
+      // Call your existing send_otp logic
+      const otp = Math.floor(100000 + Math.random() * 900000).toString();
+      const expiresAt = Date.now() + 5 * 60 * 1000; // 5 mins
+      
+      await db.collection('emailOtps').doc(email).set({
+        otp,
+        expiresAt,
+      });
+      
+      // Send email
+      const mailOptions = {
+        from: 'Scrap It Scrapit@gmail.com',
+        to: email,
+        subject: 'ScrapIt Password Reset',
+        text: `Hello ${name},\n\nYour password reset OTP is ${otp}. It is valid for 5 minutes.\n\nIf you didn't request this, please ignore this email.\n\nThanks,\nScrap It Team`,
+      };
+
+      await transporter.sendMail(mailOptions);
+      return res.status(200).json({ message: 'OTP sent to email' });
+    } else if (phoneNumber) {
+      // Phone number flow - use Firebase Auth
+      console.log("Initiating phone number password reset");
+      
+      // First check if phone number exists in your users collection
+      const db = admin.firestore();
+      const usersRef = db.collection('users');
+      const snapshot = db.collection('users').doc(phoneNumber)
+      
+      if (snapshot.empty) {
+        return res.status(404).json({ error: 'User not found' });
+      }
+      
+      // Get the user's email (assuming you store phone numbers with emails)
+      let userEmail = null;
+      // snapshot.forEach(doc => {
+      //   userEmail = doc.id; // assuming doc ID is email
+      // });
+      
+      // if (!userEmail) {
+      //   return res.status(404).json({ error: 'User not found' });
+      // }
+      
+      // Send verification code via Firebase Auth
+      const appVerifier = new firebase.auth.RecaptchaVerifier('recaptcha-container'); // You need to set this up in your frontend
+      const confirmationResult = await firebase.auth().signInWithPhoneNumber(phoneNumber, appVerifier);
+      
+      // Store the verification ID in Firestore temporarily
+      await db.collection('phoneResetVerifications').doc(phoneNumber).set({
+        verificationId: confirmationResult.verificationId,
+        email: phoneNumber, // store associated email for password reset
+        expiresAt: Date.now() + 5 * 60 * 1000 // 5 minutes expiry
+      });
+      
+      return res.status(200).json({ 
+        message: 'Verification code sent to phone',
+        verificationRequired: true 
+      });
+    }
+  } catch (error) {
+    console.error('Error in forgot password:', error);
+    return res.status(500).json({ error: 'Internal server error' });
+  }
 });
 
 module.exports = router;

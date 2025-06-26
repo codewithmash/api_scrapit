@@ -58,7 +58,6 @@ exports.sendOrderNotifications = onDocumentWritten(
         });
     };
 
-    // 📅 Save to reminders
     const saveReminder = async (title, body, type) => {
       await firestore
         .collection("users")
@@ -75,7 +74,6 @@ exports.sendOrderNotifications = onDocumentWritten(
         });
     };
 
-    // ✅ Handle order status change
     if (beforeData && beforeData.status !== afterData.status) {
       const message = {
         notification: {

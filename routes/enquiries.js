@@ -49,6 +49,7 @@ router.post('/addEnquiry', async (req, res) => {
       personInCharge,
       contactNumber,
       extraInfo: extraInfo || '',
+      status :"pending",
       createdAt: admin.firestore.FieldValue.serverTimestamp()
     };
 
@@ -64,6 +65,58 @@ router.post('/addEnquiry', async (req, res) => {
     return res.status(500).json({ error: error.message });
   }
 });
+
+router.post('/updateEnquiryStatus/:enquiryId', async (req, res) => {
+  try {
+    const { enquiryId } = req.params;
+    const { status, latitude, longitude, reason } = req.body;
+
+    if (!['approved', 'rejected'].includes(status)) {
+      return res.status(400).json({ message: 'Status must be either "approved" or "rejected"' });
+    }
+
+    const snapshot = await db.collection('campaignEnquiry')
+      .where('enquiryId', '==', enquiryId)
+      .limit(1)
+      .get();
+
+    if (snapshot.empty) {
+      return res.status(404).json({ message: 'Enquiry not found' });
+    }
+
+    const doc = snapshot.docs[0];
+
+    const updateData = {
+      status,
+      updatedAt: admin.firestore.FieldValue.serverTimestamp()
+    };
+
+    if (status === 'approved') {
+      if (!latitude || !longitude) {
+        return res.status(400).json({ message: 'Latitude and longitude are required for approval' });
+      }
+      updateData.location = new admin.firestore.GeoPoint(parseFloat(latitude), parseFloat(longitude));
+      updateData.approvedAt = admin.firestore.FieldValue.serverTimestamp();
+    }
+
+    if (status === 'rejected') {
+      updateData.rejectedAt = admin.firestore.FieldValue.serverTimestamp();
+      updateData.rejectionReason = reason || "No reason provided";
+    }
+
+    await doc.ref.update(updateData);
+
+    return res.status(200).json({
+      message: `Enquiry ${status} successfully`,
+      enquiryId
+    });
+
+  } catch (error) {
+    console.error('Error updating campaign enquiry status:', error);
+    return res.status(500).json({ error: error.message });
+  }
+});
+
 
 router.get('/getEnquiries', async (req, res) => {
   try {
@@ -124,6 +177,43 @@ router.post('/delete-enquiry', async (req, res) => {
       error: 'Deletion failed',
       details: error.message 
     });
+  }
+});
+
+
+router.post('/updateEnquiryLocation/:enquiryId', async (req, res) => {
+  try {
+    const { enquiryId } = req.params;
+    const { latitude, longitude } = req.body;
+
+    if (!latitude || !longitude) {
+      return res.status(400).json({ message: 'Latitude and longitude are required' });
+    }
+
+    const snapshot = await db.collection('campaignEnquiry')
+      .where('enquiryId', '==', enquiryId)
+      .limit(1)
+      .get();
+
+    if (snapshot.empty) {
+      return res.status(404).json({ message: 'Enquiry not found' });
+    }
+
+    const doc = snapshot.docs[0];
+
+    await doc.ref.update({
+      location: new admin.firestore.GeoPoint(parseFloat(latitude), parseFloat(longitude)),
+      updatedAt: admin.firestore.FieldValue.serverTimestamp()
+    });
+
+    return res.status(200).json({
+      message: 'Location updated successfully',
+      enquiryId
+    });
+
+  } catch (error) {
+    console.error('Error updating location:', error);
+    return res.status(500).json({ error: error.message });
   }
 });
 

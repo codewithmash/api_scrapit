@@ -68,7 +68,6 @@ router.post('/users', async (req, res) => {
   }
 });
 
-
 router.get("/scrap_analytics", async (req, res) => {
   try {
     const currentYear = new Date().getFullYear();
@@ -654,4 +653,375 @@ router.patch('/store/toggle/:id', async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 });
+
+
+router.get('/partners/ratings/all', async (req, res) => {
+  try {
+    const db = admin.firestore();
+    const ratingsSnapshot = await db.collection('partners_rating').get();
+
+    if (ratingsSnapshot.empty) {
+      return res.status(200).json({ ratings: [] });
+    }
+
+    const ratingsData = [];
+
+    for (const doc of ratingsSnapshot.docs) {
+      const data = doc.data();
+      const collectorId = data.collectorId;
+      const orderId =  data.orderId;
+      const userId =  data.userId;
+      const userName =  data.userName;
+      let collectorName = "Unknown";
+
+      // Get collector info
+      try {
+        const collectorDoc = await db.collection('partners').doc(String(collectorId)).get();
+        if (collectorDoc.exists) {
+          collectorName = collectorDoc.data().fullName || "Unnamed";
+        }
+      } catch (e) {
+        console.warn(`Failed to fetch collector: ${collectorId}`, e.message);
+      }
+
+      // Format created date from Firestore document metadata
+      const createTime = doc.createTime.toDate();
+      const formattedDate = `${String(createTime.getDate()).padStart(2, '0')}${String(createTime.getMonth() + 1).padStart(2, '0')}${createTime.getFullYear()}`;
+
+      ratingsData.push({
+        rating: data.rating || 0,
+        review: data.review || "",
+        collectorName,
+        collectorId,
+        userId,
+        userName,
+        orderId,
+    
+        createdAt: formattedDate
+      });
+    }
+
+    return res.status(200).json({ ratings: ratingsData });
+  } catch (error) {
+    console.error('Error fetching ratings:', error);
+    return res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+
+
+router.get('/get-completed-orders-weight', async (req, res) => {
+  try {
+    const { startDate, endDate } = req.query;
+
+    if (!startDate) {
+      return res.status(400).json({ error: 'startDate is required in format YYYY-MM-DD' });
+    }
+    const start = new Date(startDate);
+    const end = endDate ? new Date(endDate) : new Date(startDate);
+    end.setHours(23, 59, 59, 999);
+
+    const snapshot = await admin.firestore()
+      .collection('partners_orders')
+      .where('status', 'in', ['completed', 'paymentProcessed'])
+      .get();
+    const orders = [];
+    let totalWeight = 0;
+
+    snapshot.forEach(doc => {
+      const data = doc.data();
+
+      if (
+        data.statusTimeline &&
+        data.statusTimeline.completed &&
+        data.statusTimeline.completed.toDate() >= start &&
+        data.statusTimeline.completed.toDate() <= end
+      ) {
+        const weightValue = parseFloat(data.weight || 0);
+        totalWeight += isNaN(weightValue) ? 0 : weightValue;
+
+        orders.push({
+          id: doc.id,
+          orderId: data.orderId,
+          weight: weightValue,
+          completedAt: data.statusTimeline.completed.toDate(),
+        });
+      }
+    });
+
+    return res.json({
+      count: orders.length,
+      totalWeight,
+      orders,
+    });
+
+  } catch (error) {
+    console.error('Error fetching completed orders:', error);
+    return res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+
+
+router.post('/admin/create', async (req, res) => {
+  try {
+    const { email, password } = req.body;
+
+    if (!email || !password) {
+      return res.status(400).json({ error: 'Email and password are required.' });
+    }
+
+    const db = admin.firestore();
+    const adminRef = db.collection('admin_me').doc(email);
+
+    const existingDoc = await adminRef.get();
+    if (existingDoc.exists) {
+      return res.status(400).json({ error: 'Admin with this email already exists.' });
+    }
+
+    await adminRef.set({
+      myScrapName: email,
+      myScrapPass: password
+    });
+
+    return res.status(201).json({ message: 'Admin created successfully.' });
+  } catch (error) {
+    console.error('Error creating admin:', error);
+    return res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// router.get('/get-completed-orders-quantity', async (req, res) => {
+//   try {
+//     const { startDate, endDate } = req.query;
+
+//     if (!startDate) {
+//       return res.status(400).json({ error: 'startDate is required in YYYY-MM-DD format' });
+//     }
+
+//     const start = new Date(startDate);
+//     const end = endDate ? new Date(endDate) : new Date(startDate);
+//     end.setHours(23, 59, 59, 999);
+
+//     const snapshot = await admin.firestore()
+//       .collection('orders')
+//       .where('status', '==', 'completed')
+//       .get();
+
+//     const orders = [];
+//     let totalQuantity = 0;
+
+//     snapshot.forEach(doc => {
+//       const data = doc.data();
+
+//       const completedAt = data.statusTimeline?.completed?.toDate?.();
+//       if (!completedAt || completedAt < start || completedAt > end) return;
+
+//       let orderQuantity = 0;
+
+//       // Safely iterate over items array and accumulate quantity
+//       if (Array.isArray(data.items)) {
+//         data.items.forEach(item => {
+//           const qty = parseFloat(item?.scrapType?.quantity || 0);
+//           orderQuantity += isNaN(qty) ? 0 : qty;
+//         });
+//       }
+
+//       totalQuantity += orderQuantity;
+
+//       orders.push({
+//         id: doc.id,
+//         orderId: doc.id,
+//         completedAt,
+//         orderQuantity,
+//       });
+//     });
+
+//     return res.json({
+
+
+
+
+// router.post('/ads', upload.array('images', 5), async (req, res) => {
+//   try {
+//     const { title, description, start_date, end_date } = req.body;
+//         const adData = {
+//       title,
+//       description,
+//       start_date: new Date(start_date),
+//       end_date: new Date(end_date),
+//       createdAt: new Date(),
+//       images: [] 
+//     };
+
+//     // If images were uploaded, process them
+//     if (req.files && req.files.length > 0) {
+//       // Upload each image to Firebase Storage
+//       for (const file of req.files) {
+//         const storageRef = admin.storage().bucket().file(`ads/${Date.now()}_${file.originalname}`);
+//         await storageRef.save(file.buffer, {
+//           metadata: {
+//             contentType: file.mimetype
+//           }
+//         });
+//         const [url] = await storageRef.getSignedUrl({
+//           action: 'read',
+//           expires: '03-09-2491' 
+//         });
+//         adData.images.push(url);
+//       }
+//     }
+
+//     const docRef = await db.collection('advertisements').add(adData);
+  
+//     res.status(201).send({ 
+//       id: docRef.id, 
+//       ...adData,
+//       start_date: adData.start_date.toISOString(),
+//       end_date: adData.end_date.toISOString(),
+//       createdAt: adData.createdAt.toISOString()
+//     });
+//   } catch (err) {
+//     console.error('Error creating ad:', err);
+//     res.status(500).send({ 
+//       error: 'Failed to create advertisement',
+//       details: err.message 
+//     });
+//   }
+// });
+
+// router.get('/ads', async (req, res) => {
+//   try {
+//     const snapshot = await db.collection('advertisements').get();
+    
+//     const ads = [];
+//     snapshot.forEach(doc => {
+//       const adData = doc.data();
+//       ads.push({
+//         id: doc.id,
+//         title: adData.title,
+//         description: adData.description,
+//         images: adData.images || [], // Ensure images array exists
+//         start_date: adData.start_date.toDate().toISOString(), // Convert Firestore timestamp to ISO string
+//         end_date: adData.end_date.toDate().toISOString(),
+//         createdAt: adData.createdAt.toDate().toISOString()
+//       });
+//     });
+
+//     ads.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+
+//     res.status(200).send(ads);
+//   } catch (err) {
+//     console.error('Error fetching ads:', err);
+//     res.status(500).send({ 
+//       error: 'Failed to fetch advertisements',
+//       details: err.message 
+//     });
+//   }
+// });
+
+// router.put('/ads/:id', upload.array('images', 5), async (req, res) => {
+//   try {
+//     const { id } = req.params;
+//     const { title, description, start_date, end_date } = req.body;
+    
+//     const adRef = db.collection('advertisements').doc(id);
+//     const doc = await adRef.get();
+    
+//     if (!doc.exists) {
+//       return res.status(404).send({ error: 'Advertisement not found' });
+//     }
+
+//     const updateData = {
+//       title,
+//       description,
+//       start_date: new Date(start_date),
+//       end_date: new Date(end_date),
+//       updatedAt: new Date()
+//     };
+
+//     if (req.files && req.files.length > 0) {
+//       const existingAd = doc.data();
+//       const newImages = [];
+
+//       for (const file of req.files) {
+//         const storageRef = admin.storage().bucket().file(`ads/${Date.now()}_${file.originalname}`);
+      
+//         await storageRef.save(file.buffer, {
+//           metadata: { contentType: file.mimetype }
+//         });
+
+//         const [url] = await storageRef.getSignedUrl({
+//           action: 'read',
+//           expires: '03-09-2491'
+//         });
+
+//         newImages.push(url);
+//       }
+//       updateData.images = [...(existingAd.images || []), ...newImages];
+//     }
+
+//     await adRef.update(updateData);
+//     const updatedDoc = await adRef.get();
+//     res.status(200).send({ 
+//       id: updatedDoc.id,
+//       ...updatedDoc.data(),
+//       start_date: updatedDoc.data().start_date.toDate().toISOString(),
+//       end_date: updatedDoc.data().end_date.toDate().toISOString(),
+//       createdAt: updatedDoc.data().createdAt.toDate().toISOString()
+//     });
+//   } catch (err) {
+//     console.error('Error updating ad:', err);
+//     res.status(500).send({ 
+//       error: 'Failed to update advertisement',
+//       details: err.message 
+//     });
+//   }
+// });
+
+
+// app.delete('/ads/:id', async (req, res) => {
+//   try {
+//     const { id } = req.params;
+//     const adRef = db.collection('advertisements').doc(id);
+//     const doc = await adRef.get();
+//     if (!doc.exists) {
+//       return res.status(404).send({ error: 'Advertisement not found' });
+//     }
+
+//     const adData = doc.data();
+
+//     if (adData.images && adData.images.length > 0) {
+//       await Promise.all(
+//         adData.images.map(async (imageUrl) => {
+//           try {
+//             const encodedPath = imageUrl.split('/o/')[1].split('?')[0];
+//             const filePath = decodeURIComponent(encodedPath);
+//             const file = admin.storage().bucket().file(filePath);
+            
+//             await file.delete();
+//           } catch (err) {
+//             console.error(`Failed to delete image ${imageUrl}:`, err);
+//           }
+//         })
+//       );
+//     }
+
+//     await adRef.delete();
+
+//     res.status(200).send({
+//       message: 'Advertisement deleted successfully',
+//       deletedId: id,
+//       deletedImagesCount: adData.images?.length || 0
+//     });
+
+//   } catch (err) {
+//     console.error('Error deleting ad:', err);
+//     res.status(500).send({
+//       error: 'Failed to delete advertisement',
+//       details: err.message
+//     });
+//   }
+// });
+
 module.exports = router;

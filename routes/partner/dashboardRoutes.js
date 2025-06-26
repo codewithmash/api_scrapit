@@ -849,7 +849,6 @@ router.patch('/reschedulePartnerPickup', async (req, res) => {
 
 
 
-// For updating order status
 
 // Route to update partner order status
 router.patch('/updatePartnerOrderStatus', upload.array('photos'), async (req, res) => {
@@ -979,9 +978,9 @@ router.get('/getCompletedPickups', async (req, res) => {
 
 
 router.post('/submitRating', async (req, res) => {
-  const { collectorId, orderId, rating, review } = req.body;
+  const { collectorId, orderId, rating, review, highlight, userId, userName } = req.body;
 
-  if (!collectorId || !orderId || !rating || !review) {
+  if (!collectorId || !orderId || !rating ) {
     return res.status(400).json({ error: 'Missing required fields' });
   }
 
@@ -990,7 +989,9 @@ router.post('/submitRating', async (req, res) => {
       collectorId,
       orderId,
       rating,
-      review
+      review,
+      highlight,userId,
+      userName
     });
     return res.status(200).json({ success: true, message: 'Rating submitted' });
   } catch (err) {
@@ -1033,5 +1034,184 @@ const  db = admin.firestore();
 });
 
 
+router.post(
+  "/partners_orders/add_items_to_order",
+  upload.single("image"), // image field in form-data
+  async (req, res) => {
+    try {
+      const { orderId, partnerOrderId, scrapType } = req.body;
+
+      if (!orderId || !partnerOrderId || !scrapType) {
+        return res.status(400).json({
+          success: false,
+          error: "Missing required fields: orderId, partnerOrderId, scrapType"
+        });
+      }
+
+      const scrapData = JSON.parse(scrapType); 
+      const quantity = parseFloat(scrapData.quantity);
+      const rate = parseFloat(scrapData.ratePerKg);
+
+      if (isNaN(quantity) || isNaN(rate)) {
+        throw new Error("Invalid quantity or ratePerKg in scrapType.");
+      }
+
+      // Upload image to Firebase Storage
+      let imageUrl = "";
+      if (req.file) {
+        const bucket = admin.storage().bucket();
+        const fileName = `scrap_images/${Date.now()}_${req.file.originalname}`;
+        const file = bucket.file(fileName);
+
+        await file.save(req.file.buffer, {
+          metadata: {
+            contentType: req.file.mimetype
+          }
+        });
+
+        await file.makePublic();
+        imageUrl = file.publicUrl();
+      }
+
+      const db = admin.firestore();
+      const orderRef = db.collection("orders").doc(orderId);
+      const partnerOrderRef = db.collection("partners_orders").doc(partnerOrderId);
+      const timestamp = admin.firestore.Timestamp.now();
+
+      const [orderDoc, partnerOrderDoc] = await Promise.all([
+        orderRef.get(),
+        partnerOrderRef.get()
+      ]);
+
+      if (!orderDoc.exists || !partnerOrderDoc.exists) {
+        return res.status(404).json({ success: false, error: "Order or Partner order not found" });
+      }
+
+      const newItem = {
+        scrapItemID: `scrap_${Date.now()}_${Math.random().toString(36).substr(2, 5)}`,
+        scrapType: {
+          id: scrapData.id,
+          name: scrapData.name,
+          ratePerKg: rate,
+          category: scrapData.category,
+          quantity: quantity,
+          unit: scrapData.unit,
+          scrapImage : imageUrl
+        },
+    
+      };
+
+      const additionalAmount = quantity * rate;
+
+      const batch = db.batch();
+      batch.update(orderRef, {
+        items: admin.firestore.FieldValue.arrayUnion(newItem),
+        totalAmount: admin.firestore.FieldValue.increment(additionalAmount),
+        updatedAt: timestamp
+      });
+
+      const updatedOriginalItems = [
+        ...(partnerOrderDoc.data().originalOrderData.items || []),
+        newItem
+      ];
+
+      batch.update(partnerOrderRef, {
+        updatedAt: timestamp,
+        lastAddedItem: newItem,
+        "originalOrderData.items": updatedOriginalItems,
+        "originalOrderData.totalAmount": (partnerOrderDoc.data().originalOrderData.totalAmount || 0) + additionalAmount,
+        "originalOrderData.updatedAt": timestamp
+      });
+
+      await batch.commit();
+      return res.status(200).json({
+        success: true,
+        message: "Item added successfully with image",
+        addedItem: newItem,
+        additionalAmount
+      });
+
+    } catch (e) {
+      console.error("Error adding item with image:", e);
+      return res.status(500).json({
+        success: false,
+        error: "Failed to add item",
+        message: e.message
+      });
+    }
+  }
+);
+
+router.post('/cancel-partner-order', upload.array('images', 5), async (req, res) => {
+  const { orderId, rejectedReason } = req.body;
+  const files = req.files;
+
+  const storage = admin.storage();
+
+  if (!orderId || !rejectedReason) {
+    return res.status(400).json({ error: 'Missing orderId or rejectedReason' });
+  }
+
+  try {
+    let uploadedUrls = [];
+
+    if (files && files.length > 0) {
+    
+      const bucket = storage.bucket(); 
+
+      for (const file of files) {
+        const fileName = `rejectedImages/${orderId}/${uuidv4()}_${file.originalname}`;
+        const fileUpload = bucket.file(fileName);
+
+        await fileUpload.save(file.buffer, {
+          metadata: {
+            contentType: file.mimetype,
+          },
+        });
+
+        const signedUrlConfig = {
+          action: 'read',
+          expires: '03-01-2030',
+        };
+
+        const [url] = await fileUpload.getSignedUrl(signedUrlConfig);
+        uploadedUrls.push(url);
+      }
+    }
+
+    const snapshot = await admin.firestore().collection('partners_orders')
+      .where('orderId', '==', orderId).get();
+
+    if (snapshot.empty) {
+      return res.status(404).json({ error: 'No partner order found for this orderId' });
+    }
+
+    const partnerOrderId = snapshot.docs[0].id;
+
+    await admin.firestore().collection('partners_orders').doc(partnerOrderId).update({
+      status: 'cancelled',
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    });
+
+    // Step 3: Update orders
+    const updateData = {
+      status: 'cancelled',
+      rejectedReason,
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    };
+
+    if (uploadedUrls.length > 0) {
+      updateData.rejectedImages = uploadedUrls;
+    }
+
+    await admin.firestore().collection('orders').doc(orderId).update(updateData);
+
+    return res.status(200).json({ message: 'Partner order cancelled and images uploaded', imageUrls: uploadedUrls });
+
+  } catch (err) {
+    console.error('Error cancelling partner order:', err);
+    return res.status(500).json({ error: 'Server error during cancellation' });
+  }
+});
 
 module.exports = router;

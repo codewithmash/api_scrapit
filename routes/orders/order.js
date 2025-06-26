@@ -21,6 +21,7 @@ router.post("/create_order", async (req, res) => {
       pickupAddressType,
       pickupAddressPersonName,
       notes,
+      nextRecurringDate
       // binImages,
       // binNotes
     } = req.body;
@@ -40,14 +41,12 @@ router.post("/create_order", async (req, res) => {
         }
       });
     }
-
     if (items.length === 0) {
       return res.status(400).json({
         success: false,
         error: "Items array cannot be empty"
       });
     }
-
     const db = admin.firestore();
     const userRef = db.collection("users").doc(userId);
     const userDoc = await userRef.get();
@@ -70,7 +69,7 @@ router.post("/create_order", async (req, res) => {
 
     // Calculate total amount
     const totalAmount = items.reduce((sum, item) => {
-      return sum + (parseFloat(item.quantity) * parseFloat(item.scrapType.ratePerKg));
+      return sum + (parseFloat(item.scrapType.quantity) * parseFloat(item.scrapType.ratePerKg));
     }, 0);
 
     // Create order document
@@ -87,12 +86,11 @@ router.post("/create_order", async (req, res) => {
           ratePerKg: parseFloat(item.scrapType.ratePerKg),
           category:item.scrapType.category,
           quantity : item.scrapType.quantity,
-          unit  :  item.scrapType.unit
+          unit  :  item.scrapType.unit,
+          scrapImage :  item.scrapType.scrapImage
         },
         status: item.status || "fn_bin" // Preserve status from bin
       })),
-      // binImages,
-      // binNotes,
       status: "pending",
       statusTimeline: {
         created: timestamp,
@@ -117,7 +115,8 @@ router.post("/create_order", async (req, res) => {
       rejectedReason : "",
       user_cancelled :  false,
       user_cancelled_reason :  null,
-      user_cancelled_data : null
+      user_cancelled_data : null,
+      nextRecurringDate
     };
 
     // Start Firestore batch write
@@ -142,7 +141,7 @@ router.post("/create_order", async (req, res) => {
       bin: [], 
       lastOrderDate: admin.firestore.FieldValue.serverTimestamp()
     });
-    
+  
     // batch.update(userRef, {
     //   totalScrapped: admin.firestore.FieldValue.increment(
     //     items.reduce((sum, item) => sum + parseFloat(item.quantity), 0)
@@ -150,6 +149,7 @@ router.post("/create_order", async (req, res) => {
     //   walletAmount: admin.firestore.FieldValue.increment(totalAmount),
     //   lastOrderDate: timestamp
     // });
+
     await batch.commit();
     console.log(`Successfully created order ${orderData.orderId} and updated bin items`);
     return res.status(201).json({
@@ -511,6 +511,7 @@ router.get("/query_orders", async (req, res, next) => {
     next(error);
   }
 });
+
 // Get all the users orders
 router.get("/users/:userId/orders", async (req, res, next) => {
   try {
@@ -573,7 +574,6 @@ router.get("/users/:userId/orders", async (req, res, next) => {
   }
 });
 
-
 router.put("/update-address/:orderId", async (req, res) => {
   const { orderId } = req.params;
   const { newAddress } = req.body;
@@ -598,7 +598,6 @@ router.put("/update-address/:orderId", async (req, res) => {
     return res.status(500).json({ error: "Internal Server Error" });
   }
 });
-
 
 router.post('/cancel', async (req, res) => {
   try {
@@ -740,7 +739,6 @@ router.delete('/del_scrap_cat/:id', async (req, res) => {
   }
 });
 
-
 //for users
 router.patch('/reschedulePickup', async (req, res) => {
   const { orderId, newPickupDate } = req.body;
@@ -796,6 +794,8 @@ router.get('/getCollectorDetails', async (req, res) => {
   }
 });
 
+
+
 //for rescheduling the order-> User will reschedult the order whenever he wants 
 router.patch('/reschedulePickup', async (req, res) => {
   const { orderId, newPickupDate } = req.body;
@@ -841,6 +841,5 @@ router.patch('/reschedulePickup', async (req, res) => {
     res.status(500).json({ message: 'Internal server error.' });
   }
 });
-
 
 module.exports = router;
